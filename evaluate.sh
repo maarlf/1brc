@@ -35,8 +35,8 @@ RESET='\033[0m' # No Color
 
 MEASUREMENTS_FILE="measurements_1B.txt"
 RUNS=10
-DEFAULT_JAVA_VERSION="21.0.1-open"
-: "${BUILD_JAVA_VERSION:=21.0.1-open}"
+DEFAULT_JAVA_VERSION="21.0.2-open"
+: "${BUILD_JAVA_VERSION:=21.0.2-open}"
 RUN_TIME_LIMIT=300 # seconds
 
 TIMEOUT=""
@@ -118,7 +118,7 @@ fi
 
 print_and_execute sdk use java $BUILD_JAVA_VERSION
 print_and_execute java --version
-print_and_execute ./mvnw --quiet clean verify
+print_and_execute ./mvnw --quiet clean verify -Dlicense.skip=true
 
 print_and_execute rm -f measurements.txt
 print_and_execute ln -s $MEASUREMENTS_FILE measurements.txt
@@ -259,8 +259,8 @@ for fork in "$@"; do
   fi
   set -e
 
-  # Read java version from prepare_$fork.sh if it exists, otherwise assume 21.0.1-open
-  java_version="21.0.1-open"
+  # Read java version from prepare_$fork.sh if it exists, otherwise assume 21.0.2-open
+  java_version="21.0.2-open"
   # Hard-coding the note message for now
   notes=""
   if [ -f "./prepare_$fork.sh" ]; then

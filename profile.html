@@ -1,0 +1,1424 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<style>
+	body {margin: 0; padding: 10px 10px 22px 10px; background-color: #ffffff}
+	h1 {margin: 5px 0 0 0; font-size: 18px; font-weight: normal; text-align: center}
+	header {margin: -24px 0 5px 0; line-height: 24px}
+	button {font: 12px sans-serif; cursor: pointer}
+	p {position: fixed; bottom: 0; margin: 0; padding: 2px 3px 2px 3px; outline: 1px solid #ffc000; display: none; overflow: hidden; white-space: nowrap; background-color: #ffffe0}
+	a {color: #0366d6}
+	#hl {position: absolute; display: none; overflow: hidden; white-space: nowrap; pointer-events: none; background-color: #ffffe0; outline: 1px solid #ffc000; height: 15px}
+	#hl span {padding: 0 3px 0 3px}
+	#status {left: 0}
+	#match {right: 0}
+	#reset {cursor: pointer}
+	#canvas {width: 100%; height: 1120px}
+</style>
+</head>
+<body style='font: 12px Verdana, sans-serif'>
+<h1>CPU profile</h1>
+<header style='text-align: left'><button id='reverse' title='Reverse'>&#x1f53b;</button>&nbsp;&nbsp;<button id='search' title='Search'>&#x1f50d;</button></header>
+<header style='text-align: right'>Produced by <a href='https://github.com/async-profiler/async-profiler'>async-profiler</a></header>
+<canvas id='canvas'></canvas>
+<div id='hl'><span></span></div>
+<p id='status'></p>
+<p id='match'>Matched: <span id='matchval'></span> <span id='reset' title='Clear'>&#x274c;</span></p>
+<script>
+	// Copyright The async-profiler authors
+	// SPDX-License-Identifier: Apache-2.0
+	'use strict';
+	let root, rootLevel, px, pattern;
+	let level0 = 0, left0 = 0, width0 = 0;
+	let reverse = false;
+	const levels = Array(70);
+	for (let h = 0; h < levels.length; h++) {
+		levels[h] = [];
+	}
+
+	const canvas = document.getElementById('canvas');
+	const c = canvas.getContext('2d');
+	const hl = document.getElementById('hl');
+	const status = document.getElementById('status');
+
+	const canvasWidth = canvas.offsetWidth;
+	const canvasHeight = canvas.offsetHeight;
+	canvas.style.width = canvasWidth + 'px';
+	canvas.width = canvasWidth * (devicePixelRatio || 1);
+	canvas.height = canvasHeight * (devicePixelRatio || 1);
+	if (devicePixelRatio) c.scale(devicePixelRatio, devicePixelRatio);
+	c.font = document.body.style.font;
+
+	const palette = [
+		[0xb2e1b2, 20, 20, 20],
+		[0x50e150, 30, 30, 30],
+		[0x50cccc, 30, 30, 30],
+		[0xe15a5a, 30, 40, 40],
+		[0xc8c83c, 30, 30, 10],
+		[0xe17d00, 30, 30,  0],
+		[0xcce880, 20, 20, 20],
+	];
+
+	function getColor(p) {
+		const v = Math.random();
+		return '#' + (p[0] + ((p[1] * v) << 16 | (p[2] * v) << 8 | (p[3] * v))).toString(16);
+	}
+
+	function f(key, level, left, width, inln, c1, int) {
+		levels[level0 = level].push({left: left0 += left, width: width0 = width || width0,
+			color: getColor(palette[key & 7]), title: cpool[key >>> 3],
+			details: (int ? ', int=' + int : '') + (c1 ? ', c1=' + c1 : '') + (inln ? ', inln=' + inln : '')
+		});
+	}
+
+	function u(key, width, inln, c1, int) {
+		f(key, level0 + 1, 0, width, inln, c1, int)
+	}
+
+	function n(key, width, inln, c1, int) {
+		f(key, level0, width0, width, inln, c1, int)
+	}
+
+	function samples(n) {
+		return n === 1 ? '1 sample' : n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' samples';
+	}
+
+	function pct(a, b) {
+		return a >= b ? '100' : (100 * a / b).toFixed(2);
+	}
+
+	function findFrame(frames, x) {
+		let left = 0;
+		let right = frames.length - 1;
+
+		while (left <= right) {
+			const mid = (left + right) >>> 1;
+			const f = frames[mid];
+
+			if (f.left > x) {
+				right = mid - 1;
+			} else if (f.left + f.width <= x) {
+				left = mid + 1;
+			} else {
+				return f;
+			}
+		}
+
+		if (frames[left] && (frames[left].left - x) * px < 0.5) return frames[left];
+		if (frames[right] && (x - (frames[right].left + frames[right].width)) * px < 0.5) return frames[right];
+
+		return null;
+	}
+
+	function search(r) {
+		if (r === true && (r = prompt('Enter regexp to search:', '')) === null) {
+			return;
+		}
+
+		pattern = r ? RegExp(r) : undefined;
+		const matched = render(root, rootLevel);
+		document.getElementById('matchval').textContent = pct(matched, root.width) + '%';
+		document.getElementById('match').style.display = r ? 'inline-block' : 'none';
+	}
+
+	function render(newRoot, newLevel) {
+		if (root) {
+			c.fillStyle = '#ffffff';
+			c.fillRect(0, 0, canvasWidth, canvasHeight);
+		}
+
+		root = newRoot || levels[0][0];
+		rootLevel = newLevel || 0;
+		px = canvasWidth / root.width;
+
+		const x0 = root.left;
+		const x1 = x0 + root.width;
+		const marked = [];
+
+		function mark(f) {
+			return marked[f.left] >= f.width || (marked[f.left] = f.width);
+		}
+
+		function totalMarked() {
+			let total = 0;
+			let left = 0;
+			Object.keys(marked).sort(function(a, b) { return a - b; }).forEach(function(x) {
+				if (+x >= left) {
+					total += marked[x];
+					left = +x + marked[x];
+				}
+			});
+			return total;
+		}
+
+		function drawFrame(f, y, alpha) {
+			if (f.left < x1 && f.left + f.width > x0) {
+				c.fillStyle = pattern && f.title.match(pattern) && mark(f) ? '#ee00ee' : f.color;
+				c.fillRect((f.left - x0) * px, y, f.width * px, 15);
+
+				if (f.width * px >= 21) {
+					const chars = Math.floor(f.width * px / 7);
+					const title = f.title.length <= chars ? f.title : f.title.substring(0, chars - 2) + '..';
+					c.fillStyle = '#000000';
+					c.fillText(title, Math.max(f.left - x0, 0) * px + 3, y + 12, f.width * px - 6);
+				}
+
+				if (alpha) {
+					c.fillStyle = 'rgba(255, 255, 255, 0.5)';
+					c.fillRect((f.left - x0) * px, y, f.width * px, 15);
+				}
+			}
+		}
+
+		for (let h = 0; h < levels.length; h++) {
+			const y = reverse ? h * 16 : canvasHeight - (h + 1) * 16;
+			const frames = levels[h];
+			for (let i = 0; i < frames.length; i++) {
+				drawFrame(frames[i], y, h < rootLevel);
+			}
+		}
+
+		return totalMarked();
+	}
+
+	function unpack(cpool) {
+		for (let i = 1; i < cpool.length; i++) {
+			cpool[i] = cpool[i - 1].substring(0, cpool[i].charCodeAt(0) - 32) + cpool[i].substring(1);
+		}
+	}
+
+	canvas.onmousemove = function() {
+		const h = Math.floor((reverse ? event.offsetY : (canvasHeight - event.offsetY)) / 16);
+		if (h >= 0 && h < levels.length) {
+			const f = findFrame(levels[h], event.offsetX / px + root.left);
+			if (f) {
+				if (f !== root) getSelection().removeAllRanges();
+				hl.style.left = (Math.max(f.left - root.left, 0) * px + canvas.offsetLeft) + 'px';
+				hl.style.width = (Math.min(f.width, root.width) * px) + 'px';
+				hl.style.top = ((reverse ? h * 16 : canvasHeight - (h + 1) * 16) + canvas.offsetTop) + 'px';
+				hl.firstChild.textContent = f.title;
+				hl.style.display = 'block';
+				canvas.title = f.title + '\n(' + samples(f.width) + f.details + ', ' + pct(f.width, levels[0][0].width) + '%)';
+				canvas.style.cursor = 'pointer';
+				canvas.onclick = function() {
+					if (f !== root) {
+						render(f, h);
+						canvas.onmousemove();
+					}
+				};
+				status.textContent = 'Function: ' + canvas.title;
+				status.style.display = 'inline-block';
+				return;
+			}
+		}
+		canvas.onmouseout();
+	}
+
+	canvas.onmouseout = function() {
+		hl.style.display = 'none';
+		status.style.display = 'none';
+		canvas.title = '';
+		canvas.style.cursor = '';
+		canvas.onclick = null;
+	}
+
+	canvas.ondblclick = function() {
+		getSelection().selectAllChildren(hl);
+	}
+
+	document.getElementById('reverse').onclick = function() {
+		reverse = !reverse;
+		render();
+	}
+
+	document.getElementById('search').onclick = function() {
+		search(true);
+	}
+
+	document.getElementById('reset').onclick = function() {
+		search(false);
+	}
+
+	window.onkeydown = function() {
+		if (event.ctrlKey && event.keyCode === 70) {
+			event.preventDefault();
+			search(true);
+		} else if (event.keyCode === 27) {
+			search(false);
+		}
+	}
+
+const cpool = [
+'all',
+' AbsSeq::dsd',
+'!llocateHeap',
+'!ssembler::operand_valid_for_logical_immediate',
+' BoolNode::Value',
+' C2Compiler::compile_method',
+'!allRelocation::fix_relocation_after_move',
+'!odeBlob::is_upcall_stub',
+'%uffer::copy_code_to',
+',relocate_code_to',
+'"llectedHeap::array_allocate',
+'/fill_with_object',
+'/print_heap_before_gc',
+'"mpilation::Compilation',
+'-compile_java_method',
+'5method',
+'-emit_code_body',
+'&e::Code_Gen',
+'+mpile',
+')Optimize',
+')call_generator',
+')optimize_loops',
+'\'Broker::compiler_thread_loop',
+'/invoke_compiler_on_method',
+'\'r::compile_method',
+'$ositeElapsedCounterSource::now',
+'"ncurrentGCThread::run',
+' Dependencies::check_evol_method',
+'!ict::Insert',
+' FreeCSetClosure::do_heap_region',
+'$ListAllocator::reset',
+' G1AllocRegion::new_alloc_region_and_allocate',
+'/retire_internal',
+'\'ator::unsafe_max_tlab_alloc',
+'#nalytics::predict_card_scan_time_ms',
+'"BarrierSet::invalidate',
+'.write_ref_array_work',
+',Runtime::write_ref_array_post_entry',
+'$tchedTask::work',
+'"CardSet::reset_table_scanner',
+')MemoryManager::flush',
+'&Table::g1_mark_as_young',
+'#odeBlobClosure::do_code_blob',
+'&RootSet::contains',
+'$llectedHeap::attempt_allocation',
+'C_slow',
+'1do_collection_pause_at_safepoint',
+'Q_helper',
+'1free_region',
+'1new_mutator_alloc_region',
+'1par_iterate_regions_array',
+'1trace_heap',
+'"DirtyCardQueueSet::concatenate_log_and_stats',
+'"EvacuateRegionsBaseTask::evacuate_live_objects',
+';work',
+'1Task::scan_roots',
+'"FromCardCache::clear',
+'"GCParPhaseTimesTracker::G1GCParPhaseTimesTracker',
+':~G1GCParPhaseTimesTracker',
+'%haseTimes::print',
+'5_post_evacuate_collection_set',
+'0record_gc_pause_start',
+'0sum_thread_work_items',
+'"HeapPrinterMark::G1HeapPrinterMark',
+'"JFRTracerMark::G1JFRTracerMark',
+'"MMUTracer::report_mmu',
+'#ergeHeapRootsTask::G1CombinedClosure::do_heap_region',
+'8MergeCardSetClosure::do_heap_region',
+'6work',
+'#onitoringSupport::recalculate_sizes',
+'5update_eden_size',
+'%otonicArenaFreeMemoryTask::execute',
+'"NUMA::index_of_current_thread',
+'#methodProcessor::do_regular_processing',
+'"ParEvacuateFollowersClosure::do_void',
+'%ScanThreadState::~G1ParScanThreadState',
+'4Set::flush_stats',
+'#haseDependentSeq::predict',
+'#olicy::calculate_young_desired_length',
+'*logged_cards_processing_time',
+'*predict_base_time_ms',
+'*record_pause',
+'1young_collection_end',
+'*update_young_length_bounds',
+'$stEvacuateCollectionSetCleanupTask1::G1PostEvacuateCollectionSetCleanupTask1',
+'F2::FreeCollectionSetTask::do_work',
+'#reEvacuateCollectionSetBatchTask::G1PreEvacuateCollectionSetBatchTask',
+'ENonJavaThreadFlushLogs::FlushLogsClosure::do_thread',
+'%pareEvacuationTask::G1PrepareRegionsClosure::do_heap_region',
+'9work',
+'"RebuildFreeListTask::work',
+'$mSet::merge_heap_roots',
+'*prepare_region_for_scan',
+'*scan_collection_set_regions',
+'(TrackingPolicy::update_at_allocate',
+'#ootProcessor::evacuate_roots',
+'1process_java_roots',
+'9vm_roots',
+'"ScanCollectionSetRegionClosure::do_heap_region',
+'#erviceThread::run_service',
+'5task',
+'1wait_for_task',
+'"YoungCollector::collect',
+'2evacuate_initial_collection_set',
+'2post_evacuate_collection_set',
+'3re_evacuate_collection_set',
+'!CHeapLog::log_heap',
+'&SummaryEventSender::visit',
+'"Id::current',
+'"Tracer::send_gc_heap_summary_event',
+' HandleArea::oops_do',
+'&Mark::initialize',
+'$shakeState::has_operation',
+'!eapRegion::hr_clear',
+'*Claimer::HeapRegionClaimer',
+'*Manager::par_iterate',
+'*RemSet::add_code_root',
+'2clear_locked',
+' IndexSetIterator::advance_and_next',
+'"lineTree::ok_to_inline',
+'"stanceKlass::allocate_instance',
+'8objArray',
+'0rray_klass',
+'"terpreterFrameClosure::offset_do',
+'+OopMap::iterate_oop',
+' JavaThread::oops_do_frames',
+'4no_frames',
+',thread_main_inner',
+'$_sun_nio_ch_UnixFileDispatcherImpl_seek0',
+' Klass::check_array_allocation_length',
+' LIR_Assembler::cmove',
+'0onst2reg',
+'/emit_code',
+'4lir_list',
+'!ogStreamImpl<LogTargetHandle>::write',
+' MacroAssembler::mov_immediate64',
+'!emAllocator::Allocation::notify_allocation',
+'.allocate',
+'.mem_allocate_inside_tlab_slow',
+'"taspaceUtils::print_on',
+'#hod::mask_for',
+'!onitor::wait',
+'-_without_safepoint_check',
+'\'DeflationThread::monitor_deflation_thread_entry',
+'!utatorAllocRegion::retire',
+'#ex::lock_without_safepoint_check',
+' Node::hash',
+'$Hash::hash_find_insert',
+' ObjArrayAllocator::initialize',
+'!paque1Node::Opcode',
+'"toRuntime::is_deoptimized_caller_frame',
+'-new_array_C',
+'7nozero_C',
+'1instance_C',
+' Parse::Parse',
+'\'do_all_blocks',
+'*call',
+'*one_block',
+'/ytecode',
+'%Generator::generate',
+'!erfLongVariant::sample',
+'#iodicTask::real_time_tick',
+'!haseCCP::PhaseCCP',
+'*analyze',
+'*do_transform',
+'*push_child_nodes_to_worklist',
+'/more_uses',
+'*transform',
+'&FG::do_global_code_motion',
+'*global_code_motion',
+'*partial_latency_of_defs',
+'&haitin::Register_Allocate',
+'.build_ifg_physical',
+'.elide_copy',
+'.interfere_with_live',
+'.post_allocate_copy_removal',
+'&oalesce::coalesce_driver',
+'\'nservativeCoalesce::coalesce',
+'=py_copy',
+'%GVN::transform_no_reclaim',
+'%IFG::Compute_Effective_Degree',
+'*effective_degree',
+'&dealLoop::PhaseIdealLoop',
+'0build_and_optimize',
+'6loop_late',
+'?_post_work',
+'0compute_lca_of_uses',
+'0optimize',
+'&terGVN::optimize',
+'%Live::add_liveout',
+'+compute',
+'%Output::Output',
+'!latformMonitor::wait',
+'!redictedCallGenerator::generate',
+' ReferenceProcessorPhaseTimes::print_all_references',
+'Dphase',
+'"gMask::is_vector',
+'"locIterator::set_limits',
+'%ation::pd_call_destination',
+' SafepointSynchronize::end',
+'!cheduling::AddNodeToBundle',
+',DoScheduling',
+'!pinPause',
+'!tatSamplerTask::task',
+'!uspendibleThreadSet::desynchronize',
+'6join',
+' TaskTerminator::offer_termination',
+'!hread::call_run',
+'(oops_do',
+'&BlockInVMPreprocess<InFlightMutexRelease>::~ThreadBlockInVMPreprocess',
+'&LocalAllocBuffer::end_reserve',
+'8retire_before_allocation',
+'&s::non_java_threads_do',
+')possibly_parallel_oops_do',
+';threads_do',
+'!ype::cmp',
+'&hashcons',
+' Unsafe_AllocateInstance',
+' VMThread::evaluate_operation',
+'+xecute',
+'*inner_execute',
+'*run',
+'*wait_for_operation',
+'/until_executed',
+'"_G1CollectForAllocation::doit',
+'#Operation::evaluate',
+' WatcherThread::run',
+'/sleep',
+'!orkerDataArray<double>::reset',
+'&Thread::run',
+',s::run_task',
+' ZThread::~ZThread',
+' [unknown_Java]',
+' __gettimeofday',
+'"lseek',
+'"psynch_cvbroad',
+'+wait',
+')mutexwait',
+'"vfprintf',
+'!new_array_Java',
+'%instance_Java',
+'!platform_memmove',
+'-set',
+'*strlen',
+'"thread_mutex_firstfit_lock_slow',
+')start',
+'!utmpxname.cold.2',
+'!vsnprintf',
+' arrayof_jlong_arraycopy',
+'.disjoint_arraycopy',
+'!ttach_listener_thread_entry',
+' bsearch',
+' checkcast_arraycopy',
+'!iBytecodeStream::get_method',
+'"Env::get_method_by_index_impl',
+'\'register_method',
+'"Method::ciMethod',
+'*get_flow_analysis',
+'"ObjectFactory::create_new_metadata',
+'1get_metadata',
+'"TypeFlow::StateVector::apply_one_bytecode',
+'9do_invoke',
+',df_flow_types',
+'-o_flow',
+',flow_block',
+'1types',
+'!lock_gettime',
+'#se',
+'!ompI_reg_immIAddSubNode::pipeline',
+'"nvertReturnVal',
+'"unt_positives',
+' dev/morling/onebrc/CalculateAverage_maarlf$$Lambda.0x000000c001009820.accept',
+'aa238.apply',
+'KMeasurement.<init>',
+'KResultRow.toString',
+'J.lambda$main$3',
+'Kmain',
+' encoding_for_logical_immediate',
+' forward_copy_longs',
+'!rame::oops_code_blob_do',
+',interpreted_do',
+'\'sender_raw',
+'"ee_tiny',
+'!stat64',
+' get_tiny_previous_free_msize',
+' int const static_fast_get_field_wrapper<10, int const>',
+'!s_init_completed',
+' java/io/BufferedReader$1.hasNext',
+'6.ensureOpen',
+'7fill',
+'7implReadLine',
+'7readLine',
+'(InputStreamReader.read',
+'(PrintStream.println',
+'%lang/AbstractStringBuilder.append',
+'FChars',
+'@ensureCapacityInternal',
+'*Double.parseDouble',
+'*String.<init>',
+'1charAt',
+'3eckBoundsBeginEnd',
+'<OffCount',
+'2oder',
+'1decodeASCII',
+'1equals',
+'1hashCode',
+'1indexOf',
+'2sEmpty',
+'3Latin1',
+'1length',
+'1rangeCheck',
+'1split',
+'2ubstring',
+'1trim',
+'1valueOf',
+'0Builder.append',
+'8toString',
+'0Latin1.charAt',
+'7hashCode',
+'7indexOf',
+'7newString',
+'7trim',
+'0UTF16.compress',
+'6hashCode',
+'6indexOf',
+'6newString',
+'+ystem$2.currentCarrierThread',
+'3decodeASCII',
+'*invoke/BootstrapMethodInvoker.invoke',
+'3undMethodHandle$Species_L.<init>',
+'McopyWith',
+'B.<init>',
+'1CallSite.makeSite',
+'1DelegatingMethodHandle$Holder.delegate',
+'2irectMethodHandle$Holder.invokeStatic',
+'KnewInvokeSpecial',
+'C.allocateInstance',
+'1InvokerBytecodeGenerator.addMethod',
+'JemitStaticInvoke',
+'JgenerateCustomizedCode',
+'`Bytes',
+'8s$Holder.invokeExact_MT',
+'AlinkToTargetMethod',
+'1LambdaForm.compileToBytecode',
+'<prepare',
+'1MethodHandle.<init>',
+'=Natives.linkCallSite',
+'QImpl',
+'=s.dropArgumentsTrusted',
+'1StringConcatFactory.generateMHInlineCopy',
+'EmakeConcatWithConstants',
+'%nio/Buffer.hasRemaining',
+'0session',
+'*yteBuffer.arrayOffset',
+'4put',
+'7Buffer',
+')CharBuffer.<init>',
+'4wrap',
+')HeapByteBuffer.compact',
+'8ix',
+'8put',
+'-CharBuffer.<init>',
+')charset/CharsetDecoder.decode',
+'%util/AbstractMap.toString',
+'+rrayList$SubList.toArray',
+'3.add',
+'4elementData',
+'4get',
+'5row',
+'/s.copyOfRange',
+'<Byte',
+'*HashMap.computeIfAbsent',
+'2hash',
+'*Iterator.forEachRemaining',
+'*Spliterators$IteratorSpliterator.forEachRemaining',
+'*concurrent/locks/AbstractOwnableSynchronizer.getExclusiveOwnerThread',
+'CQueuedSynchronizer.compareAndSetState',
+'Vrelease',
+'VsetState',
+';ReentrantLock$NonfairSync.initialTryLock',
+'ISync.lock',
+'NtryRelease',
+'H.lock',
+'Iunlock',
+'*stream/AbstractPipeline.copyInto',
+'Bevaluate',
+'BwrapAndCopyInto',
+'1Collectors$$Lambda.0x000000c0010677f0.accept',
+';.lambda$groupingBy$53',
+'1ReduceOps$3ReducingSink.accept',
+';ReduceOp.evaluateSequential',
+'3ferencePipeline$3$1.accept',
+'B.collect',
+'!byte_arraycopy',
+'&disjoint_arraycopy',
+'!dk/internal/math/FloatingDecimal$ASCIIToBinaryBuffer.doubleValue',
+'A.parseDouble',
+'BreadJavaFormatString',
+'.isc/Blocker.begin',
+':currentCarrierThread',
+'2InternalLock.lock',
+'?unlock',
+'2ScopedMemoryAccess.copyMemory',
+'OInternal',
+'2Unsafe.allocateInstance',
+'9copyMemory',
+'-org/objectweb/asm/Frame.execute',
+'EgetAbstractTypeFromDescriptor',
+'Epush',
+'?MethodWriter.visitFieldInsn',
+'?SymbolTable.addType',
+'RInternal',
+'-util/ArraysSupport.signedHashCode',
+'@utf16hashCode',
+'@vectorizedHashCode',
+'2Preconditions.checkFromIndexSize',
+'IToIndex',
+' large_byte_array_inflate',
+' mach_absolute_time',
+'!ethodHandle::~methodHandle',
+' nmethod::new_nmethod',
+'*method',
+')oops_do',
+'0_process_weak',
+' os::elapsed_counter',
+'$javaTimeNanos',
+'$malloc',
+'$vsnprintf',
+'!utputStream::print_cr',
+' pthread_cond_broadcast',
+'(jit_write_protect_np',
+'(mutex_unlock',
+' read',
+' semaphore_signal_trap',
+'*wait_trap',
+'!mall_free_list_remove_ptr',
+'&malloc_from_free_list',
+'-should_clear',
+'!un/nio/ch/ChannelInputStream.available',
+'>read',
+'+FileChannelImpl.position',
+';read',
+';size',
+'+IOUtil.read',
+'6IntoNativeBuffer',
+'+NativeThreadSet.add',
+'+UnixFileDispatcherImpl.read',
+'F0',
+'Bseek',
+'F0',
+'Cize',
+'F0',
+')s/StreamDecoder.implRead',
+':nReady',
+'9lockedRead',
+'9read',
+'=Bytes',
+'+UTF_8$Decoder.decodeArrayLoop',
+'?Loop',
+'9xflow',
+'!zone_malloc_should_clear',
+' thread_native_entry',
+'\'start',
+'!lsLoadPNode::out_RegMask',
+'"v_get_addr',
+'!rampoline_stub_Relocation::get_trampoline_for',
+' void G1ParCopyClosure<(G1Barrier)0, false>::do_oop_work<oopDesc*>'
+];
+unpack(cpool);
+
+n(3,14032)
+u(1859,10)
+u(1228,1)
+n(1915,3)
+u(3443)
+f(1923,2,3,2)
+u(3443)
+f(2329,2,2)
+n(2585,1)
+n(3339)
+f(2209,1,1,13898)
+u(2345,1)
+u(2513)
+u(2905)
+u(2521)
+u(2513)
+u(2193)
+u(2769)
+u(2777)
+u(2657)
+u(2625)
+u(2729)
+u(2665)
+u(2673)
+u(2801)
+u(2793)
+u(2785)
+u(2641)
+u(2633)
+u(2649)
+u(2761)
+u(2753)
+u(2745)
+u(2713)
+u(2721)
+u(2697)
+u(2705)
+u(3273)
+u(3249)
+u(3265)
+u(3257)
+u(3281)
+u(3288)
+f(3137,2,1,13897)
+u(3081)
+u(3121)
+u(3089)
+u(3073)
+u(2993)
+u(2489,26)
+u(2922)
+f(2969,8,26,32)
+u(2978)
+u(2442)
+u(2546)
+u(3314)
+u(3298)
+f(2985,8,32,13839)
+f(2297,9,5,5689,197,0,0)
+f(2329,10,192,5497,5,0,0)
+f(2329,11,97,5399)
+f(2322,12,42,5129,3670,0,0)
+f(1228,13,3325,2)
+u(964)
+u(1100)
+u(1108)
+u(268,1)
+u(580)
+f(356,17,1)
+u(364)
+u(1756)
+u(2292)
+f(2306,13,1,21)
+n(2313,1445)
+u(2337,1445,5,0,0)
+u(3641,1445,5,0,0)
+u(3202,1)
+u(3058)
+u(3042)
+u(3034)
+u(3010)
+f(3210,16,1,2)
+u(3066)
+u(3018)
+u(3050)
+f(3633,16,2,1442,2,0,0)
+u(3617,1442,2,0,0)
+u(2810,1)
+n(2858)
+u(2890)
+u(2850)
+f(2897,18,1,1091)
+u(3665)
+u(3625,1)
+u(3505)
+u(3521)
+u(3585)
+u(2825)
+f(3657,20,1,1090)
+f(2617,21,1072,15)
+u(2425)
+f(2163,23,10,4)
+n(3339,1)
+f(3674,21,1,3)
+f(3625,18,3,99)
+u(3505,99,3,0,0)
+u(3521,35,2,0,0)
+u(3562,2)
+n(3585,33)
+u(3593)
+f(1027,23,1,1)
+u(2284)
+f(1875,23,1,31)
+f(3537,20,31,64,1,0,0)
+f(3601,21,1,63)
+u(3609)
+u(2267,61)
+n(2284,2)
+f(3649,18,2,250)
+u(2866,1)
+u(2874)
+f(3513,19,1,249)
+u(3513)
+u(3529,249,1,0,0)
+u(3545,249,1,0,0)
+u(3545,249,1,0,0)
+u(2881,25)
+u(2833)
+u(2841)
+u(2817,1)
+n(3217,24)
+u(3226)
+u(3242)
+u(1987,1)
+n(2227,23)
+f(3553,24,23,224,1,0,0)
+u(3569,224,1,0,0)
+u(3577,224,1,0,1)
+u(2155,1)
+n(3459,223)
+f(2386,13,223,330,324,0,0)
+u(2386,323,317,0,0)
+f(2578,15,38,285,279,0,0)
+f(1220,16,279,6)
+u(84,5)
+f(1100,18,1,4)
+u(1108)
+u(356,2)
+u(364)
+u(1756)
+u(1788)
+u(1132,1)
+u(1540)
+u(1891)
+f(3435,24,1)
+f(580,20,1)
+n(1684)
+f(1036,17,1)
+f(2482,14,1,7)
+u(2410)
+u(3322)
+f(2521,13,7,3)
+u(2354)
+u(2362,1)
+n(2370,2)
+f(2529,13,2,3)
+f(2386,14,1,2)
+f(1995,15,1,1)
+f(3202,12,1,135)
+u(3058)
+f(3042,14,21,114)
+f(3034,15,27,87)
+f(3010,16,32,55)
+f(3210,12,55,93)
+u(3066)
+f(3018,14,42,51)
+f(3050,15,26,25)
+f(3002,16,19,2)
+n(3026,4)
+f(2489,11,4,1)
+u(3513)
+u(3530)
+u(3186)
+u(3194)
+u(2610)
+f(3129,9,1,8145,416,0,0)
+f(2177,10,66,6505,191,0,0)
+u(2201,6505,191,0,0)
+u(2185,2956,51,0,0)
+f(2377,13,28,2872,23,0,0)
+u(3169,2872,23,0,0)
+f(3161,15,23,1223)
+n(3177,1626,0,1,0)
+f(1212,16,1328,1)
+u(84)
+u(1100)
+u(1108)
+u(356)
+u(332)
+f(1228,16,1)
+u(964)
+u(1100)
+u(1108)
+u(356)
+u(364)
+u(1156)
+u(260)
+u(564)
+u(556)
+f(2394,16,1,216)
+u(2538)
+f(2474,16,216,20)
+n(2506,60)
+u(2570)
+f(3161,13,60,56)
+f(2489,12,56,3549,140,0,0)
+u(2489,3549,140,0,0)
+f(2450,14,5,135)
+u(2450)
+u(2554)
+f(2489,14,135,3407)
+f(1212,15,366,2)
+u(972)
+u(84)
+u(1100)
+u(1108,1)
+u(356)
+u(364)
+u(252)
+u(396)
+u(756)
+u(452)
+f(1939,19,1)
+f(2450,15,1,803,789,0,0)
+f(2466,16,640,61)
+n(2474,32,28,0,0)
+n(2554,60)
+n(2593,10)
+f(2458,15,10,4)
+n(2474,212)
+f(2418,16,34,178)
+f(2498,15,178,1259,1232,0,0)
+f(2402,16,54,28)
+u(3330)
+f(2474,16,28,2)
+u(2418)
+f(2562,16,2,1157,1148,0,0)
+f(1228,17,209,1)
+u(964)
+u(1100)
+u(1108)
+u(1692)
+u(92)
+u(892)
+f(2386,17,1,579)
+f(3147,18,508,14)
+n(3155,57)
+f(2954,17,57,368,360,0,0)
+f(2962,18,32,336,328,0,0)
+f(1220,19,211,7)
+u(84,6)
+u(1100,5)
+u(1092,1)
+n(1108,3)
+u(356,2)
+u(364)
+u(252,1)
+u(396)
+f(1756,25,1)
+u(1788)
+u(1132)
+u(1676)
+u(900)
+u(3715)
+f(1684,23,1)
+f(1188,22,1)
+f(1188,21,1)
+f(1204,20,1)
+u(2252)
+u(60)
+f(3147,19,1,35)
+n(3155,82)
+n(3443,1)
+f(2601,16,1,18)
+f(2386,17,2,12)
+f(3147,18,11,1)
+f(2578,17,1,3)
+n(2954,1)
+u(2962)
+f(2914,15,1,428)
+f(284,16,36,16)
+n(2019,376)
+f(284,17,203,53)
+n(292,33)
+n(300,62)
+n(3715,25)
+f(2922,15,25,304,301,0,0)
+f(2922,16,25,279,276,0,0)
+f(2946,17,190,89,86,0,0)
+f(2946,18,20,69,66,1,0)
+f(1212,19,67,2)
+u(972)
+u(84,1)
+u(1100)
+u(1108)
+u(356)
+u(364)
+u(1852)
+f(980,21,1)
+f(2938,15,1,29)
+u(2930)
+f(2985,14,29,2)
+u(3129)
+u(2177)
+u(2201)
+u(2489)
+u(2489)
+u(2489)
+f(3113,10,2,1574,159,0,0)
+f(3097,11,23,1551,136,0,0)
+f(3105,12,79,1472,57,0,0)
+f(2170,13,25,11)
+n(2738,23,21,0,0)
+u(2682,23,21,0,0)
+f(2690,15,20,3,1,0,0)
+f(1228,16,1,1)
+u(964)
+u(1100)
+u(1108)
+u(356)
+u(364)
+u(1156)
+u(260)
+u(3451)
+f(3233,16,1)
+u(1740)
+u(3443)
+f(2969,13,1,1413,0,1,0)
+f(2434,14,252,147)
+n(2978,1014,1010,0,0)
+f(2442,15,53,961,957,0,0)
+f(2546,16,133,824)
+f(3314,17,30,794)
+u(3298)
+f(2585,16,794,4)
+f(3313,17,1,3)
+u(3305)
+f(3699,1,3,124)
+u(1963)
+u(3692)
+u(1660)
+u(212,6)
+u(796)
+u(804,2)
+u(572)
+u(1644)
+u(1140)
+u(1540)
+u(1891)
+f(812,7,2,4)
+u(1140)
+u(1540)
+u(1891,3)
+n(2131,1)
+u(1971)
+f(716,5,1)
+n(1020,27)
+u(180,23)
+u(188)
+u(44,21)
+u(148)
+u(140,13)
+u(1348,1)
+u(1356)
+u(1364)
+f(1372,11,1,11)
+u(1380,1)
+u(1396)
+u(948)
+f(1404,12,1,2)
+u(1388)
+f(1412,12,2,1)
+u(1420)
+u(1428)
+f(1444,12,1,2)
+u(1452)
+f(1524,12,2,3)
+f(1516,13,2,1)
+u(3715)
+f(1572,12,1)
+n(3708)
+f(1532,11,1)
+u(1612)
+u(1604)
+u(2148)
+f(156,10,1,6)
+u(172,2)
+u(1500)
+u(1460)
+u(1468)
+u(1476)
+u(1484)
+f(1492,17,1,1)
+f(1300,11,1,2)
+u(1308)
+u(1324,1)
+u(1332)
+u(1196)
+f(1732,13,1)
+u(228)
+u(1724)
+f(1316,11,1)
+u(1340)
+f(1508,11,1)
+u(36)
+f(1276,10,1,2)
+u(1236)
+u(1244)
+u(1260)
+u(1252)
+u(1548)
+u(1548)
+u(1276)
+u(1236)
+u(1244)
+u(1260)
+u(1252)
+u(164,1)
+u(956)
+u(2060)
+u(2108)
+u(2124)
+u(2100)
+u(2116)
+u(2084)
+u(2092)
+u(2028)
+u(2036)
+u(2076)
+u(2068)
+u(2052)
+u(220)
+f(1276,22,1)
+u(1236)
+u(1244)
+u(1260)
+u(1252)
+u(1276)
+u(1236)
+u(1244)
+u(1260)
+u(1252)
+u(1276)
+u(1236)
+u(1244)
+u(1260)
+u(1252)
+u(1548)
+u(1276)
+u(1236)
+u(1244)
+u(1260)
+u(1252)
+u(1548)
+u(1276)
+u(1236)
+u(1244)
+u(1260)
+u(1252)
+u(1548)
+u(1276)
+u(1236)
+u(1244)
+u(1260)
+u(1252)
+u(1548)
+u(1276)
+u(1236)
+u(1244)
+u(1260)
+u(1252)
+u(1548)
+u(1276)
+u(1236)
+u(1244)
+u(1260)
+u(1268)
+u(1436)
+u(1180)
+u(1172)
+f(196,8,1,2)
+u(108)
+u(124)
+u(116,1)
+u(132)
+u(1060)
+u(1068)
+u(1044)
+u(1052)
+u(1084)
+u(28)
+u(2220)
+u(2011)
+f(2044,11,1)
+u(3364)
+u(3372)
+u(68)
+u(76)
+u(52)
+u(1588)
+u(3724)
+u(1580)
+f(1148,6,1,3)
+u(1140)
+u(1540)
+u(1891)
+f(2004,6,3,1)
+u(2139)
+f(1292,5,1)
+n(1772,29)
+u(1764,28)
+u(1596,1)
+u(1636)
+u(1883)
+f(1748,7,1,27)
+u(1804)
+u(1796)
+u(372)
+u(380)
+u(820)
+u(476,2)
+u(484)
+u(1556)
+u(1564)
+u(3428)
+u(1076,1)
+u(1931)
+f(3420,18,1)
+u(1979)
+u(1947)
+f(492,13,1)
+u(1828)
+f(508,13,1)
+u(100)
+u(852)
+u(1116)
+u(3428)
+u(3420)
+u(1979)
+u(1907)
+u(1931)
+f(516,13,1)
+u(412)
+u(876)
+u(860)
+f(660,13,1,3)
+u(636,1)
+u(500)
+f(652,14,1)
+u(524)
+f(668,14,1)
+u(628)
+u(644)
+u(276)
+u(620)
+u(12)
+f(692,13,1)
+n(828,4)
+u(732,2)
+u(1844,1)
+u(3467)
+f(1852,15,1)
+f(1844,14,1,2)
+u(3467,1)
+n(3475)
+f(836,13,1,4)
+u(676,1)
+u(20)
+u(3412)
+u(1939)
+f(1844,14,1,3)
+u(3467,1)
+n(3475,2)
+f(844,13,2,10)
+u(692,2)
+u(20,1)
+u(3412)
+u(1939)
+f(3412,15,1)
+f(916,14,1)
+u(20)
+u(3412)
+u(3683)
+u(3499)
+u(3491)
+u(3483)
+f(1844,14,1,5)
+u(3467,3)
+n(3475,2)
+f(1939,14,2)
+f(1780,6,2,1)
+u(1140)
+u(1540)
+u(1891)
+f(1812,5,1,5)
+u(1292,1)
+u(1628)
+u(1284)
+u(3396)
+u(3347)
+f(1820,6,1,4)
+u(1140,3)
+u(1540)
+u(1867,1)
+n(1891,2)
+f(3347,7,2,1)
+f(1836,5,1,55)
+u(308,10)
+u(460,1)
+u(204)
+u(3404)
+f(468,7,1)
+u(204)
+u(3396)
+u(3347)
+f(612,7,1)
+u(604)
+u(604)
+u(2259)
+u(2275)
+f(684,7,1,4)
+u(404)
+u(236)
+u(204,2)
+u(3396)
+u(3347,1)
+n(3404)
+f(388,10,1)
+u(908)
+u(940)
+u(324)
+u(244)
+f(868,10,1)
+f(1700,7,1)
+u(700)
+u(420)
+f(1939,7,1,2)
+f(436,6,2,14)
+u(428,6)
+u(596)
+u(1652)
+u(1140,2)
+u(1540)
+u(1891)
+f(1164,10,2)
+u(1955)
+u(1899)
+f(1619,10,2)
+f(444,7,2,7)
+u(764)
+u(772,6)
+u(1708)
+u(1716)
+u(1668)
+u(1004,5)
+u(2236,1)
+u(340)
+u(3388)
+u(588)
+u(3380)
+u(932)
+u(348)
+f(2244,14,1,4)
+u(996,3)
+f(988,16,2,1)
+f(1124,15,1)
+u(3356)
+f(1012,13,1)
+u(884)
+f(780,9,1)
+u(3732)
+f(748,7,1)
+u(404)
+u(788)
+f(548,6,1)
+u(404)
+u(532)
+u(540)
+f(716,6,1,7)
+u(924)
+f(708,8,5,1)
+u(740)
+u(316)
+f(740,8,1)
+f(724,6,1,2)
+f(204,7,1,1)
+u(3396)
+u(3347)
+f(3475,6,1,21)
+
+search();
+</script></body></html>
