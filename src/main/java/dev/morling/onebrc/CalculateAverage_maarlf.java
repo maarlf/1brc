@@ -35,7 +35,6 @@ public class CalculateAverage_maarlf {
     }
 
     private static record ResultRow(double min, double mean, double max) {
-
         public String toString() {
             return round(min) + "/" + round(mean) + "/" + round(max);
         }
@@ -43,9 +42,10 @@ public class CalculateAverage_maarlf {
         private double round(double value) {
             return Math.round(value * 10.0) / 10.0;
         }
-    };
+    }
 
     private static class MeasurementAggregator {
+
         private double min = Double.POSITIVE_INFINITY;
         private double max = Double.NEGATIVE_INFINITY;
         private double sum;
@@ -62,7 +62,8 @@ public class CalculateAverage_maarlf {
         // .collect(toMap(e -> e.getKey(), e -> Math.round(e.getValue() * 10.0) / 10.0)));
         // System.out.println(measurements1);
 
-        Collector<Measurement, MeasurementAggregator, ResultRow> collector = Collector.of(
+        Collector<Measurement, MeasurementAggregator, ResultRow> collector =
+            Collector.of(
                 MeasurementAggregator::new,
                 (a, m) -> {
                     a.min = Math.min(a.min, m.value);
@@ -80,12 +81,19 @@ public class CalculateAverage_maarlf {
                     return res;
                 },
                 agg -> {
-                    return new ResultRow(agg.min, (Math.round(agg.sum * 10.0) / 10.0) / agg.count, agg.max);
-                });
+                    return new ResultRow(
+                        agg.min,
+                        (Math.round(agg.sum * 10.0) / 10.0) / agg.count,
+                        agg.max
+                    );
+                }
+            );
 
-        Map<String, ResultRow> measurements = new TreeMap<>(Files.lines(Paths.get(FILE))
+        Map<String, ResultRow> measurements = new TreeMap<>(
+            Files.lines(Paths.get(FILE))
                 .map(l -> new Measurement(l.split(";")))
-                .collect(groupingBy(m -> m.station(), collector)));
+                .collect(groupingBy(m -> m.station(), collector))
+        );
 
         System.out.println(measurements);
     }
