@@ -53,15 +53,6 @@ public class CalculateAverage_maarlf {
     }
 
     public static void main(String[] args) throws IOException {
-        // Map<String, Double> measurements1 = Files.lines(Paths.get(FILE))
-        // .map(l -> l.split(";"))
-        // .collect(groupingBy(m -> m[0], averagingDouble(m -> Double.parseDouble(m[1]))));
-        //
-        // measurements1 = new TreeMap<>(measurements1.entrySet()
-        // .stream()
-        // .collect(toMap(e -> e.getKey(), e -> Math.round(e.getValue() * 10.0) / 10.0)));
-        // System.out.println(measurements1);
-
         Collector<Measurement, MeasurementAggregator, ResultRow> collector =
             Collector.of(
                 MeasurementAggregator::new,
@@ -93,7 +84,7 @@ public class CalculateAverage_maarlf {
             Files.lines(Paths.get(FILE))
                 .parallel()
                 .map(l -> new Measurement(l.split(";")))
-                .collect(groupingBy(m -> m.station(), collector))
+                .collect(groupingByConcurrent(m -> m.station(), collector))
         );
 
         System.out.println(measurements);
