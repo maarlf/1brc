@@ -53,8 +53,7 @@ public class CalculateAverage_maarlf {
     }
 
     public static void main(String[] args) throws IOException {
-        Collector<Measurement, MeasurementAggregator, ResultRow> collector =
-            Collector.of(
+        Collector<Measurement, MeasurementAggregator, ResultRow> collector = Collector.of(
                 MeasurementAggregator::new,
                 (a, m) -> {
                     a.min = Math.min(a.min, m.value);
@@ -73,19 +72,16 @@ public class CalculateAverage_maarlf {
                 },
                 agg -> {
                     return new ResultRow(
-                        agg.min,
-                        (Math.round(agg.sum * 10.0) / 10.0) / agg.count,
-                        agg.max
-                    );
-                }
-            );
+                            agg.min,
+                            (Math.round(agg.sum * 10.0) / 10.0) / agg.count,
+                            agg.max);
+                });
 
         Map<String, ResultRow> measurements = new TreeMap<>(
-            Files.lines(Paths.get(FILE))
-                .parallel()
-                .map(l -> new Measurement(l.split(";")))
-                .collect(groupingByConcurrent(m -> m.station(), collector))
-        );
+                Files.lines(Paths.get(FILE))
+                        .parallel()
+                        .map(l -> new Measurement(l.split(";")))
+                        .collect(groupingByConcurrent(m -> m.station(), collector)));
 
         System.out.println(measurements);
     }
