@@ -66,11 +66,9 @@ public class CalculateAverage_maarlf {
         TreeMap<String, ResultRow> results = new TreeMap<>();
 
         try (
-            FileChannel channel = FileChannel.open(
-                Paths.get(FILE),
-                StandardOpenOption.READ
-            )
-        ) {
+                FileChannel channel = FileChannel.open(
+                        Paths.get(FILE),
+                        StandardOpenOption.READ)) {
             fileSize = channel.size();
             long position = 0;
             long chunkSize = 1024 * 1024;
@@ -78,10 +76,9 @@ public class CalculateAverage_maarlf {
             while (position < fileSize) {
                 long size = Math.min(chunkSize, fileSize - position);
                 ByteBuffer buffer = channel.map(
-                    FileChannel.MapMode.READ_ONLY,
-                    position,
-                    size
-                );
+                        FileChannel.MapMode.READ_ONLY,
+                        position,
+                        size);
 
                 int bufferSize = buffer.limit();
                 while (buffer.get(bufferSize - 1) != '\n') {
@@ -92,7 +89,8 @@ public class CalculateAverage_maarlf {
 
                 processBuffer(buffer, results);
             }
-        } catch (IOException e) {
+        }
+        catch (IOException e) {
             e.printStackTrace();
         }
 
@@ -100,9 +98,8 @@ public class CalculateAverage_maarlf {
     }
 
     private static void processBuffer(
-        ByteBuffer buffer,
-        TreeMap<String, ResultRow> results
-    ) {
+                                      ByteBuffer buffer,
+                                      TreeMap<String, ResultRow> results) {
         byte[] lineBuffer = new byte[128];
         int index = 0;
 
@@ -111,13 +108,13 @@ public class CalculateAverage_maarlf {
             if (c != '\n') {
                 lineBuffer[index] = c;
                 index++;
-            } else {
+            }
+            else {
                 String line = new String(
-                    lineBuffer,
-                    0,
-                    index,
-                    StandardCharsets.UTF_8
-                );
+                        lineBuffer,
+                        0,
+                        index,
+                        StandardCharsets.UTF_8);
                 processLine(line, results);
                 index = 0;
             }
@@ -125,16 +122,13 @@ public class CalculateAverage_maarlf {
     }
 
     private static void processLine(
-        String line,
-        TreeMap<String, ResultRow> results
-    ) {
+                                    String line,
+                                    TreeMap<String, ResultRow> results) {
         String[] tokens = line.split(";");
 
         String station = tokens[0];
         double measurement = Double.parseDouble(tokens[1]);
 
-        results.merge(station, new ResultRow(measurement), (oldVal, newVal) ->
-            oldVal.merge(newVal)
-        );
+        results.merge(station, new ResultRow(measurement), (oldVal, newVal) -> oldVal.merge(newVal));
     }
 }
