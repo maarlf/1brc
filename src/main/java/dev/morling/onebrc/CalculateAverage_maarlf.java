@@ -25,10 +25,14 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.TreeMap;
+import java.util.concurrent.*;
 
 public class CalculateAverage_maarlf {
 
     private static final String FILE = "./measurements.txt";
+    private static final int CHUNK_SIZE = 1024 * 1024;
+    private static final int THREAD_POOL_SIZE = Runtime.getRuntime()
+            .availableProcessors();
 
     private static record ResultRow(
         double min,
@@ -61,9 +65,9 @@ public class CalculateAverage_maarlf {
         }
     }
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) {
         long fileSize;
-        TreeMap<String, ResultRow> results = new TreeMap<>();
+        ConcurrentHashMap<String, ResultRow> results = new ConcurrentHashMap<>();
 
         try (
                 FileChannel channel = FileChannel.open(
@@ -71,10 +75,11 @@ public class CalculateAverage_maarlf {
                         StandardOpenOption.READ)) {
             fileSize = channel.size();
             long position = 0;
-            long chunkSize = 1024 * 1024;
+            ExecutorService executor = Executors.newFixedThreadPool(
+                    THREAD_POOL_SIZE);
 
             while (position < fileSize) {
-                long size = Math.min(chunkSize, fileSize - position);
+                long size = Math.min(CHUNK_SIZE, fileSize - position);
                 ByteBuffer buffer = channel.map(
                         FileChannel.MapMode.READ_ONLY,
                         position,
@@ -87,19 +92,22 @@ public class CalculateAverage_maarlf {
                 buffer.limit(bufferSize);
                 position += bufferSize;
 
-                processBuffer(buffer, results);
+                executor.submit(() -> processBuffer(buffer, results));
             }
+
+            executor.shutdown();
+            executor.awaitTermination(1, TimeUnit.HOURS);
         }
-        catch (IOException e) {
+        catch (IOException | InterruptedException e) {
             e.printStackTrace();
         }
 
-        System.out.println(results);
+        System.out.println(new TreeMap<>(results));
     }
 
     private static void processBuffer(
                                       ByteBuffer buffer,
-                                      TreeMap<String, ResultRow> results) {
+                                      ConcurrentHashMap<String, ResultRow> results) {
         byte[] lineBuffer = new byte[128];
         int index = 0;
 
@@ -123,7 +131,7 @@ public class CalculateAverage_maarlf {
 
     private static void processLine(
                                     String line,
-                                    TreeMap<String, ResultRow> results) {
+                                    ConcurrentHashMap<String, ResultRow> results) {
         String[] tokens = line.split(";");
 
         String station = tokens[0];
