@@ -132,10 +132,10 @@ public class CalculateAverage_maarlf {
     private static void processLine(
                                     String line,
                                     ConcurrentHashMap<String, ResultRow> results) {
-        String[] tokens = line.split(";");
-
-        String station = tokens[0];
-        double measurement = Double.parseDouble(tokens[1]);
+        int delimiterIndex = line.indexOf(';');
+        String station = line.substring(0, delimiterIndex);
+        double measurement = Double.parseDouble(
+                line.substring(delimiterIndex + 1));
 
         results.merge(station, new ResultRow(measurement), (oldVal, newVal) -> oldVal.merge(newVal));
     }
